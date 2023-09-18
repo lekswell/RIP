@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+
+{% block title %}Актуальные мероприятия{% endblock %}
+
+{% block content %}
+<header>
+    <h1><a href="{% url 'events_url' %}"> Музей МГТУ им. Н.Э.Баумана </a></h1>
+    <form action="{% url 'events_url' %}" method="get">
+        <input type="text" name="query" placeholder="Поиск мероприятий" class="search-input">
+        <input type="submit" value="Искать" class="btn-custom">
+    </form>
+</header>
+<ul>
+    {% for event in data.events %}
+    <li>
+        <h2>{{ event.title }}</h2>
+        <a href="{% url 'event_url' event.id %}"><img style="text-align: center;" src="{{ event.image }}" alt="{{ event.title }}"></a>
+        <p>{{ event.dates }}</p>
+    </li>
+    {% endfor %}
+</ul>
+{% endblock %}
+

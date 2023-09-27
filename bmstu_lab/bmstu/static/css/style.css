@@ -21,10 +21,17 @@ h2 {
 
 body {
   background: linear-gradient(to bottom, #747474 0px, #c0bebe 150px, #c0bebe);
+  background-size: cover;
+  background-attachment: fixed; /* Делает фон фиксированным */
   margin: 0; /* Убирает отступы по умолчанию */
   padding: 0; /* Убирает внутренние отступы по умолчанию */
-  height: 100vh; /* Задает высоту элемента на 100% высоты окна браузера */
-  overflow: hidden; /* Скрывает возможные прокрутки контента за пределами экрана */
+  min-height: 100%; /* Устанавливает минимальную высоту body на 100% окна браузера */
+  display: flex;
+  flex-direction: column;
+}
+
+html {
+  height: 100%; /* Задает высоту элемента на 100% высоты окна браузера */
 }
 
 .btn-custom {
@@ -64,16 +71,33 @@ ul {
 }
 
 li {
-  display: inline-block; 
-  margin-right: 50px;
+  display: inline-block;
+  margin-right: 30px;
+  margin-bottom: 30px;
   background-color: #c0bebe;
-
+  width: 300px; /* Фиксированная ширина */
+  height: 500px; /* Фиксированная высота */
 }
 
 header {
-  display: flex; 
-  align-items: center;
+  position: sticky;
+  top: 0;
+  background-color: #747474; /* Пример цвета фона для header */
+  display: flex; /* Добавляем flex-контейнер */
+  justify-content: space-between; /* Равномерное распределение элементов вдоль оси X */
+  align-items: center; /* Выравнивание по центру по вертикали */
+  padding: 10px 20px; /* Пример отступов вокруг элементов header */
 }
+
+
+body {
+  margin: 0; /* Убирает отступы по умолчанию */
+  padding: 0; /* Убирает внутренние отступы по умолчанию */
+  /* Добавьте остальные стили для body */
+}
+
+
+
 
 img {
   margin: 0 auto; /* Центрируем изображение по горизонтали */

@@ -16,11 +16,12 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from bmstu.migrations import views
+from bmstu.views import GetEvents, GetEvent, DeleteEvent
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('', views.GetEvents, name='events_url'),
-    path('event/<int:eventId>/', views.GetEvent, name='event_url'),
-    path('sendText', views.sendText, name='sendText'),
+    path('', GetEvents, name='events_url'),
+    path('event/<int:eventId>/', GetEvent, name='event_url'),
+    path('event/<int:eventId>/delete/', DeleteEvent, name='delete_event')
 ]
+

@@ -7,18 +7,17 @@
     <h1><a href="{% url 'events_url' %}"> Музей МГТУ им. Н.Э.Баумана </a></h1>
     <a href="{% url 'events_url' %}" class="btn-custom">Вернуться к мероприятиям</a>
 </header>
-<div class = 'card-table'>
-    <div class = 'card-cell'>
+<div class="card-table">
+    <div class="card-cell">
         <h2>{{ data.title }}</h2>
         <h2>{{ data.dates }}</h2>
         <img class="img-card" src="{{ data.image }}" alt="{{ data.title }}">
     </div>
-    <div class = 'card-cell'>
+    <div class="card-cell">
         <div>
-            <h2>О мероприятии:</h2>   
+            <h2>О мероприятии:</h2> 
+            <h4>{{ data.info }}</h4>  <!-- Обратитесь к полю Info модели Events -->
         </div>
     </div>
 </div>
-
 {% endblock %}
-

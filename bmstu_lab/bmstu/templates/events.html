@@ -16,10 +16,9 @@
         <h2>{{ event.Name }}</h2>
         <a href="{% url 'event_url' event.Event_id %}"><img style="text-align: center;" src="{{ event.Image }}" alt="{{ event.Name }}"></a>
         <h5>{{ event.Start_date }} - {{ event.End_date }}</h5>
-        <h5>{{ event.Status}}</h5>
         <form method="post" action="{% url 'delete_event' eventId=event.Event_id %}">
             {% csrf_token %}
-            <button type="submit">Удалить</button>
+            <input type="submit" value="Удалить" class="btn-custom">
         </form>        
     </li>
     {% endfor %}

@@ -125,6 +125,8 @@ def add_event_to_reservation(request, pk, format=None):
     """
     Создает заявку, если требуется, и добавляет услугу в заявку
     """
+    if not request.data:
+        return Response({'error': 'Пустой запрос'}, status=status.HTTP_400_BAD_REQUEST)
     client = Users.objects.get(User_id=2)
     # Проверка наличия активной заявки со статусом 'M' для конкретного пользователя
     try:

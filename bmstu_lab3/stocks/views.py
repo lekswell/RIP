@@ -5,6 +5,20 @@ from stocks.serializers import UsersSerializer, ReservationsSerializer, EventsSe
 from stocks.models import Users, Reservations, Events, Event_Reservation
 from rest_framework.decorators import api_view
 from django.utils import timezone
+from minio import Minio
+# from minio.error import NoSuchKey, ResponseError
+
+client = Minio(endpoint="localhost:9000",   # адрес сервера
+               access_key='minio',          # логин админа
+               secret_key='minio124',       # пароль админа
+               secure=False)      
+
+
+def upload_image_to_minio(image_name):
+    client.fput_object(bucket_name='events',  # имя бакета Minio
+                   object_name=image_name,   # имя для нового файла в хранилище Minio
+                   file_path=f'/home/student/pythonProjects/bmstu_lab3/minio/images/{image_name}')  # путь к исходному файлу на вашем сервере
+
 
 """
 УСЛУГИ ###########################################################################################
@@ -25,18 +39,32 @@ def get_events(request, format=None):
         # Если параметр "search" передан, выполним фильтрацию по полю "Name" на основе значения search_query
         events = events.filter(Name__icontains=search_query)
 
-    serializer = EventsSerializer(events, many=True)
-    return Response(serializer.data)
+    serialized_events = []
+    for event in events:
+        serialized_event = EventsSerializer(event).data
+        # Добавьте поле "ImageURL" в объект события, указывающее на изображение в MinIO
+        serialized_event['ImageURL'] = f"http://localhost:9000/events/{event.Image}"
+        serialized_events.append(serialized_event)
+
+    return Response(serialized_events)
 
 @api_view(['POST'])
-def post_event(request, format=None):    
+def post_event(request, format=None):
     """
     Добавляет новое событие
     """
-    print('post')
     serializer = EventsSerializer(data=request.data)
+    
     if serializer.is_valid():
-        serializer.save()
+        # Получим имя файла из запроса
+        image_name = request.data.get('Image', '')
+
+        if image_name:
+            # Загрузим файл в Minio
+            upload_image_to_minio(image_name)
+
+        # Сохраним событие в базе данных
+        event = serializer.save(Image=image_name)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     else:
         if 'Status' in serializer.errors:
@@ -45,9 +73,10 @@ def post_event(request, format=None):
                 '{}({})'.format(status[0], status[1]) for status in Events.STATUS_CHOICE
             ]
             return Response(
-                {'error': 'Недопустимый статус. Доступные статусы: {}'.format(', '.join(available_statuses))},
+                {'error': 'Недопустимый статус. Доступные статусы: {}'.format(', '.ойн(available_statuses))},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
     
 @api_view(['GET'])
 def get_event(request, pk, format=None):

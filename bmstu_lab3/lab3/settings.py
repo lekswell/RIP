@@ -83,10 +83,10 @@ WSGI_APPLICATION = 'lab3.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'rip',
-        'USER': 'student',
-        'PASSWORD': 'root',
-        'HOST': '192.168.1.102',
+        'NAME': 'rip2',
+        'USER': '',
+        'PASSWORD': '',
+        'HOST': '',
         'PORT': 5432, # Стандартный порт PostgreSQL
         'TEST_CHARSET': 'utf8',
     }
@@ -129,6 +129,14 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
 STATIC_URL = 'static/'
+
+# MINIO_STORAGE_ENDPOINT = 'localhost:9001'
+# MINIO_STORAGE_ACCESS_KEY = 'minio'
+# MINIO_STORAGE_SECRET_KEY = 'minio124'
+# MINIO_STORAGE_USE_HTTPS = False
+# MINIO_STORAGE_MEDIA_BUCKET_NAME = 'events'
+# DEFAULT_FILE_STORAGE = 'storages.backends.minio.MinioStorage'
+
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field

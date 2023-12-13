@@ -6,18 +6,21 @@ from stocks.models import Users, Reservations, Events, Event_Reservation
 from rest_framework.decorators import api_view
 from django.utils import timezone
 from minio import Minio
-# from minio.error import NoSuchKey, ResponseError
+from pathlib import Path
+from django.core.files.uploadedfile import InMemoryUploadedFile
+from s3.minio import get_minio_presigned_url, upload_image_to_minio
+
 
 client = Minio(endpoint="localhost:9000",   # адрес сервера
-               access_key='minio',          # логин админа
-               secret_key='minio124',       # пароль админа
+               access_key='',          # логин админа
+               secret_key='',       # пароль админа
                secure=False)      
 
 
-def upload_image_to_minio(image_name):
-    client.fput_object(bucket_name='events',  # имя бакета Minio
-                   object_name=image_name,   # имя для нового файла в хранилище Minio
-                   file_path=f'/home/student/pythonProjects/bmstu_lab3/minio/images/{image_name}')  # путь к исходному файлу на вашем сервере
+# def upload_image_to_minio(image_name):
+#     client.fput_object(bucket_name='events',  # имя бакета Minio
+#                    object_name=image_name,   # имя для нового файла в хранилище Minio
+#                    file_path=f'/home/student/pythonProjects/bmstu_lab3/minio/images/{image_name}')  # путь к исходному файлу на вашем сервере
 
 
 """
@@ -31,9 +34,14 @@ def get_events(request, format=None):
     print('get')
     
     search_query = request.GET.get('search', '')  # Получаем параметр "search" из запроса
+    status = request.GET.get('status', '')  # Получаем параметр "status" из запроса
 
     # Фильтруем события по полю "Status" и исключаем те, где Status = 'D'
     events = Events.objects.exclude(Status='D')
+
+    if status:
+        # Если параметр "status" передан, выполним фильтрацию по полю "Status" на основе значения status
+        events = events.filter(Status=status)
 
     if search_query:
         # Если параметр "search" передан, выполним фильтрацию по полю "Name" на основе значения search_query
@@ -41,9 +49,12 @@ def get_events(request, format=None):
 
     serialized_events = []
     for event in events:
-        serialized_event = EventsSerializer(event).data
+        # Generate a presigned URL for the event image
+        image_url = get_minio_presigned_url(event.Image)
+        
         # Добавьте поле "ImageURL" в объект события, указывающее на изображение в MinIO
-        serialized_event['ImageURL'] = f"http://localhost:9000/events/{event.Image}"
+        serialized_event = EventsSerializer(event).data
+        serialized_event['ImageURL'] = image_url
         serialized_events.append(serialized_event)
 
     return Response(serialized_events)
@@ -54,17 +65,33 @@ def post_event(request, format=None):
     Добавляет новое событие
     """
     serializer = EventsSerializer(data=request.data)
-    
+
     if serializer.is_valid():
-        # Получим имя файла из запроса
-        image_name = request.data.get('Image', '')
+        event = serializer.save()
 
-        if image_name:
-            # Загрузим файл в Minio
-            upload_image_to_minio(image_name)
+        # Получаем файл из request.data
+        image_file = request.data.get('Image')
 
-        # Сохраним событие в базе данных
-        event = serializer.save(Image=image_name)
+        # Загружаем изображение в MinIO
+        if isinstance(image_file, InMemoryUploadedFile):
+            try:
+                # Извлекаем название файла из объекта InMemoryUploadedFile
+                file_name = Path(image_file.name).name
+
+                # Создаем уникальный путь к файлу в MinIO
+                minio_path = f"{file_name}"
+
+                # Читаем данные с начала файла
+                image_file.seek(0)
+                # Обновляем поле Image события и загружаем в MinIO
+                upload_image_to_minio(image_file, minio_path)
+                event.Image = Path(file_name).stem
+                event.save()
+                
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+            except Exception as e:
+                return Response({'error': f'Ошибка загрузки изображения: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     else:
         if 'Status' in serializer.errors:
@@ -73,20 +100,26 @@ def post_event(request, format=None):
                 '{}({})'.format(status[0], status[1]) for status in Events.STATUS_CHOICE
             ]
             return Response(
-                {'error': 'Недопустимый статус. Доступные статусы: {}'.format(', '.ойн(available_statuses))},
+                {'error': 'Недопустимый статус. Доступные статусы: {}'.format(', '.join(available_statuses))},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
+        else:
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 @api_view(['GET'])
 def get_event(request, pk, format=None):
-    stock = get_object_or_404(Events, pk=pk)
+    event = get_object_or_404(Events, pk=pk)
+    
     if request.method == 'GET':
         """
         Возвращает информацию о событии
         """
-        serializer = EventsSerializer(stock)
-        return Response(serializer.data)
+        image_url = get_minio_presigned_url(event.Image)
+        serializer_data = EventsSerializer(event).data
+        # Добавьте поле "ImageURL" в объект события, указывающее на изображение в MinIO
+        serializer_data['ImageURL'] = image_url
+        return Response(serializer_data)
+
 
 @api_view(['PUT'])
 def put_event(request, pk, format=None):
@@ -97,6 +130,26 @@ def put_event(request, pk, format=None):
     serializer = EventsSerializer(event, data=request.data, partial=True)  # Use partial=True
 
     if serializer.is_valid():
+        # Если в запросе есть изображение, обновим его в MinIO
+        image_file = request.data.get('Image')
+
+        if isinstance(image_file, InMemoryUploadedFile):
+            try:
+                # Извлекаем название файла из объекта InMemoryUploadedFile
+                file_name = Path(image_file.name).name
+
+                # Создаем уникальный путь к файлу в MinIO
+                minio_path = f"{file_name}"
+
+                # Читаем данные с начала файла
+                image_file.seek(0)
+
+                # Обновляем поле Image события и загружаем в MinIO
+                upload_image_to_minio(image_file, minio_path)
+                serializer.validated_data['Image'] = Path(file_name).stem
+            except Exception as e:
+                return Response({'error': f'Ошибка загрузки изображения: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         serializer.save()
         return Response(serializer.data)
     else:
@@ -109,6 +162,9 @@ def put_event(request, pk, format=None):
                 {'error': 'Недопустимый статус. Доступные статусы: {}'.format(', '.join(available_statuses))},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        else:
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 @api_view(['DELETE'])
 def delete_event(request, pk, format=None):

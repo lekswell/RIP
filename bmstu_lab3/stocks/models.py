@@ -27,7 +27,8 @@ class Reservations(models.Model):
     Status = models.CharField(max_length=2, choices=STATUS_CHOICE)
     class Meta:
         managed = False
-        db_table = 'bmstu_reservations'
+        db_table = 'bmstu_reservations',
+
 
 
 class Events(models.Model):
@@ -41,7 +42,7 @@ class Events(models.Model):
     Name = models.CharField(max_length=30)
     Start_date = models.DateField()
     End_date = models.DateField()
-    Image = models.CharField(max_length=255)
+    Image = models.ImageField(upload_to='events/')  
     Status = models.CharField(max_length=20,choices=STATUS_CHOICE)
     Info = models.CharField(max_length=255)
     class Meta:

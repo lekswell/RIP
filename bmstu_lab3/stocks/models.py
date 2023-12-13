@@ -7,16 +7,16 @@ class Users(models.Model):
     Password = models.CharField(max_length=30)
     Nickname = models.CharField(max_length=20)
     class Meta:
-        managed = False
+        managed = True
         db_table = 'bmstu_users'
 
 class Reservations(models.Model):
     STATUS_CHOICE = (
-        ('M', 'Made'),
-        ('iP', 'In Progress'),
-        ('C', 'Completed'),
-        ('Ca', 'Canceled'),
-        ('D', 'Deleted'),
+        ('M', 'Черновик'),
+        ('iP', 'В работе'),
+        ('C', 'Завершена'),
+        ('Ca', 'Отменена'),
+        ('D', 'Удалена'),
     )
     Reserve_id = models.AutoField(primary_key=True)
     Moderator_id = models.ForeignKey(Users, on_delete=models.CASCADE, related_name='moderator_reservations')
@@ -24,10 +24,10 @@ class Reservations(models.Model):
     Creation_date = models.DateTimeField()
     Formation_date = models.DateTimeField(null=True)
     Completion_date = models.DateTimeField(null=True)
-    Status = models.CharField(max_length=2, choices=STATUS_CHOICE)
+    Status = models.CharField(max_length=20, choices=STATUS_CHOICE)
     class Meta:
-        managed = False
-        db_table = 'bmstu_reservations',
+        managed = True
+        db_table = 'bmstu_reservations'
 
 
 
@@ -46,7 +46,7 @@ class Events(models.Model):
     Status = models.CharField(max_length=20,choices=STATUS_CHOICE)
     Info = models.CharField(max_length=255)
     class Meta:
-        managed = False
+        managed = True
         db_table = 'bmstu_events'
 
 class Event_Reservation(models.Model):
@@ -56,7 +56,6 @@ class Event_Reservation(models.Model):
     Group_size = models.IntegerField()
     Date = models.DateField()
     class Meta:
-        managed = False
+        managed = True
         db_table = 'bmstu_event_reservation'
-
 

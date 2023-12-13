@@ -12,8 +12,8 @@ from s3.minio import get_minio_presigned_url, upload_image_to_minio
 
 
 client = Minio(endpoint="localhost:9000",   # адрес сервера
-               access_key='',          # логин админа
-               secret_key='',       # пароль админа
+               access_key='minio',          # логин админа
+               secret_key='minio124',       # пароль админа
                secure=False)      
 
 
@@ -334,18 +334,19 @@ def put_reservation_user(request, pk, format=None):
     Обновляет статус заявки (для пользователя)
     """
     reservation = get_object_or_404(Reservations, pk=pk)
+    if reservation.Status != 'M':
+        return Response({"detail": "Invalid initial status. Must be 'M'."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Получите новое значение статуса из запроса
     new_status = request.data.get("Status")
-
-    # Проверьте, что новый статус допустим (равен 'C' или 'D')
-    if new_status in ['M']:
+    if new_status == 'iP':
         reservation.Status = new_status
+        reservation.Formation_date=timezone.now()
         reservation.save()
         serializer = ReservationsSerializer(reservation)
         return Response(serializer.data)
     else:
-        return Response({"detail": "Invalid status. Use 'M'"}, status=status.HTTP_400_BAD_REQUEST) 
+        return Response({"detail": "Invalid status. Use 'iP'"}, status=status.HTTP_400_BAD_REQUEST)
+
 
 @api_view(['PUT'])
 def put_reservation_admin(request, pk, format=None):
@@ -353,17 +354,18 @@ def put_reservation_admin(request, pk, format=None):
     Обновляет статус заявки (для админа)
     """
     reservation = get_object_or_404(Reservations, pk=pk)
+    if reservation.Status != 'iP':
+        return Response({"detail": "Invalid initial status. Must be 'iP'."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Получите новое значение статуса из запроса
     new_status = request.data.get("Status")
-
-    if new_status in ['iP', 'Ca', 'C']:
+    if new_status in ['C','Ca']:
         reservation.Status = new_status
+        reservation.Completion_date=timezone.now()
         reservation.save()
         serializer = ReservationsSerializer(reservation)
         return Response(serializer.data)
     else:
-        return Response({"detail": "Invalid status. Use 'iP' or 'Ca' or 'C'"}, status=status.HTTP_400_BAD_REQUEST)  
+        return Response({"detail": "Invalid status. Use 'C' or 'Ca' "}, status=status.HTTP_400_BAD_REQUEST)
     
 
 @api_view(['DELETE'])
@@ -375,6 +377,7 @@ def delete_reservation(pk, format=None):
     
     # Установите поле 'Status' в 'D' и сохраните объект
     reservation.Status = 'D'
+    reservation.Completion_date=timezone.now()
     reservation.save()
     
     return Response(status=status.HTTP_204_NO_CONTENT)

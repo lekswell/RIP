@@ -1,10 +1,11 @@
 from .models import Users, Reservations, Events, Event_Reservation
 from rest_framework import serializers
 
+
 class UsersSerializer(serializers.ModelSerializer):
     class Meta:
         model = Users
-        fields = '__all__'
+        fields = ['role', 'email', 'username', 'password']
 
 class ReservationsSerializer(serializers.ModelSerializer):
     class Meta:

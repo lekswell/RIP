@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'drf_yasg',
 
     # DRF
     'rest_framework',
@@ -45,6 +46,16 @@ INSTALLED_APPS = [
     # Наше приложение
     'stocks',
 ]
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.BasicAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticatedOrReadOnly',
+    ]      
+}
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -83,10 +94,10 @@ WSGI_APPLICATION = 'lab3.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'rip',
+        'NAME': 'rip2',
         'USER': 'student',
         'PASSWORD': 'root',
-        'HOST': '192.168.1.101',
+        'HOST': '192.168.1.102',
         'PORT': 5432, # Стандартный порт PostgreSQL
         'TEST_CHARSET': 'utf8',
     }
@@ -111,7 +122,7 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-
+AUTH_USER_MODEL = 'stocks.Users'
 
 # Internationalization
 # https://docs.djangoproject.com/en/4.2/topics/i18n/

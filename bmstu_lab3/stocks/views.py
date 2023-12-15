@@ -1,4 +1,5 @@
 from rest_framework.response import Response
+from django.core.exceptions import ObjectDoesNotExist
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.hashers import check_password
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication
@@ -19,6 +20,13 @@ from pathlib import Path
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from s3.minio import get_minio_presigned_url, upload_image_to_minio
 import logging
+import uuid
+from django.conf import settings
+import redis
+
+# Connect to our Redis instance
+session_storage = redis.StrictRedis(host=settings.REDIS_HOST, port=settings.REDIS_PORT) 
+
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +82,16 @@ def login_view(request):
         user = authenticate(request, username=email, password=password)
 
         if user is not None and user.is_active:
-            login(request, user)
-            return Response({'status': 'ok'})
+            # Генерация случайного токена
+            token = str(uuid.uuid4())
+
+            # Сохранение токена и идентификатора пользователя в Redis
+            session_storage.set(token, user.user_id)
+
+            # Установка куки с токеном в ответе
+            response = Response({'status': 'ok'})
+            response.set_cookie("session_token", token)
+            return response
         else:
             return Response({'status': 'error', 'error': 'Login failed'}, status=status.HTTP_401_UNAUTHORIZED)
 
@@ -91,8 +107,17 @@ def login_view(request):
                      operation_summary="User Logout", responses={200: 'OK'})
 @api_view(['POST'])
 def logout_view(request):
-    logout(request._request)
-    return Response({'status': 'Success'})
+    # Получение токена из куки
+    token = request.COOKIES.get('session_token')
+
+    if token:
+        # Удаление токена из Redis
+        session_storage.delete(token)
+
+    # Очистка куки с токеном
+    response = Response({'status': 'Success'})
+    response.delete_cookie('session_token')
+    return response
 """
 УСЛУГИ ###########################################################################################
 """
@@ -342,40 +367,64 @@ def add_event_to_reservation(request, pk, format=None):
 @api_view(['GET'])
 @authentication_classes([SessionAuthentication, BasicAuthentication])
 @permission_classes([IsAuthenticated])
+@csrf_exempt
 def get_reservations(request, format=None):
     """
     Выводит все заявки с данными по событиям
     """
-    # Проверяем роль пользователя
-    if request.user.role == 'Admin':
-        # Если админ, получаем все заявки
-        reservations = Reservations.objects.exclude(Status='D')
-    elif request.user.role == 'User':
-        # Если обычный пользователь, получаем только свои заявки
-        reservations = Reservations.objects.filter(Client_id=request.user.user_id, Status='M').exclude(Status='D')
+    token = request.COOKIES.get("session_token")
 
-    response_data = []
-    for reservation in reservations:
-        # Получаем все связанные заявки на мероприятия для текущей заявки
-        event_reservations = Event_Reservation.objects.filter(Reserve_id=reservation)
+    if token:
+        user_id = session_storage.get(token)
 
-        # Инициализируем список данных о мероприятиях
-        event_data = []
+        if user_id is not None:
+            try:
+                user_id = int(user_id)
+            except ValueError:
+                return Response({'error': 'Неверный формат идентификатора пользователя'}, status=400)
 
-        for event_reservation in event_reservations:
-            # Получаем связанные с мероприятием данные
-            event = event_reservation.Event_id
-            event_data.append({
-                "event_reservation": EventReservationSerializer(event_reservation).data,
-                "event": EventsSerializer(event).data
-            })
+            try:
+                if request.user.role == 'Admin':
+                    # Если админ, получаем все заявки
+                    reservations = Reservations.objects.exclude(Status='D')
+                elif request.user.role == 'User' and request.user.user_id == user_id:
+                    # Если обычный пользователь и запрос от владельца сессии, получаем только свои заявки
+                    reservations = Reservations.objects.filter(Client_id=request.user.user_id, Status='M').exclude(Status='D')
+                else:
+                    # Если роль не Admin и не User, или запрос от чужой сессии, возвращаем ошибку
+                    return Response({'error': 'Доступ запрещен'}, status=403)
 
-        reservation_data = ReservationsSerializer(reservation).data
-        response_data.append({
-            "reservation": reservation_data,
-            "reservation_data": event_data
-        })
-    return Response(response_data)
+                response_data = []
+                for reservation in reservations:
+                    # Получаем все связанные заявки на мероприятия для текущей заявки
+                    event_reservations = Event_Reservation.objects.filter(Reserve_id=reservation)
+
+                    # Инициализируем список данных о мероприятиях
+                    event_data = []
+
+                    for event_reservation in event_reservations:
+                        # Получаем связанные с мероприятием данные
+                        event = event_reservation.Event_id
+                        event_data.append({
+                            "event_reservation": EventReservationSerializer(event_reservation).data,
+                            "event": EventsSerializer(event).data
+                        })
+
+                    reservation_data = ReservationsSerializer(reservation).data
+                    response_data.append({
+                        "reservation": reservation_data,
+                        "reservation_data": event_data
+                    })
+
+                return Response(response_data)
+            except ObjectDoesNotExist:
+                return Response({'error': 'Объект не найден'}, status=404)
+        else:
+            # Пользователь не имеет доступа, возвращаем соответствующий ответ
+            return Response({'error': 'Доступ запрещен'}, status=403)
+    else:
+        # Если токен отсутствует, возвращаем ошибку
+        return Response({'error': 'Отсутствует токен сессии'}, status=401)
 
 
 

@@ -5,7 +5,7 @@ from rest_framework import serializers
 class UsersSerializer(serializers.ModelSerializer):
     class Meta:
         model = Users
-        fields = ['role', 'email', 'username', 'password']
+        fields = '__all__'
 
 class ReservationsSerializer(serializers.ModelSerializer):
     class Meta:

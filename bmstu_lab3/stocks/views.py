@@ -1,34 +1,30 @@
 from rest_framework.response import Response
-from django.core.exceptions import ObjectDoesNotExist
-from django.contrib.auth import authenticate, login, logout
-from django.contrib.auth.hashers import check_password
-from rest_framework.authentication import SessionAuthentication, BasicAuthentication
-from rest_framework.decorators import api_view, permission_classes, authentication_classes
-from rest_framework.permissions import  AllowAny, IsAuthenticated
-from .permissions import IsAdmin
-from django.views.decorators.csrf import csrf_exempt
-from django.shortcuts import get_object_or_404
-from drf_yasg.utils import swagger_auto_schema
-from django.contrib.auth.hashers import make_password
+from rest_framework.decorators import api_view
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
-from stocks.serializers import UsersSerializer, ReservationsSerializer, EventsSerializer, EventReservationSerializer
-from stocks.models import Users, Reservations, Events, Event_Reservation
+
+from s3.minio import get_minio_presigned_url, upload_image_to_minio
+
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_date
+from django.core.files.uploadedfile import InMemoryUploadedFile
+from django.contrib.auth.hashers import make_password, check_password
+
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
+
 from minio import Minio
 from pathlib import Path
-from django.core.files.uploadedfile import InMemoryUploadedFile
-from s3.minio import get_minio_presigned_url, upload_image_to_minio
-import logging
-import uuid
-from django.conf import settings
-import redis
+import hashlib
+import secrets
 
-# Connect to our Redis instance
-session_storage = redis.StrictRedis(host=settings.REDIS_HOST, port=settings.REDIS_PORT) 
-
-
-logger = logging.getLogger(__name__)
+from stocks.serializers import UsersSerializer, ReservationsSerializer, EventsSerializer, EventReservationSerializer
+from stocks.models import Users, Reservations, Events, Event_Reservation
+from stocks.redis_view import (
+    set_key,
+    get_value,
+    delete_value
+)
 
 client = Minio(endpoint="localhost:9000",   # адрес сервера
                access_key='minio',          # логин админа
@@ -38,93 +34,131 @@ client = Minio(endpoint="localhost:9000",   # адрес сервера
 """
 АВТОРИЗАЦИЯ ###########################################################################################
 """
-@swagger_auto_schema(method='post', operation_summary="User Registration", 
-                     request_body=UsersSerializer, responses={201: 'Created', 400: 'Bad Request'})
+def check_authorize(request):
+    existing_session = request.COOKIES.get('session_key')
+    
+    if existing_session and get_value(existing_session):
+        user_id = get_value(existing_session)
+        try:
+            user = Users.objects.get(User_id=user_id)
+            return user
+        except Users.DoesNotExist:
+            pass
+    
+    return None
+
+@swagger_auto_schema(
+    method='post',
+    request_body=openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=['Email', 'Password', 'Username'],
+    properties={
+        'Email': openapi.Schema(type=openapi.TYPE_STRING),
+        'Password': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_PASSWORD),
+        'Username': openapi.Schema(type=openapi.TYPE_STRING),
+        },
+    ),
+    responses={
+        201: 'Пользователь успешно создан',
+        400: 'Не хватает обязательных полей или пользователь уже существует',
+    },
+    operation_summary='Регистрация нового пользователя'
+)
 @api_view(['POST'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([])
-@csrf_exempt
-def registration(request):
-    """
-    Регистрация новых пользователей на основе роли
-    """
-    required_fields = ['role', 'email', 'password', 'username']
+def register(request, format=None):
+    required_fields = ['Email', 'Username', 'Password']
     missing_fields = [field for field in required_fields if field not in request.data]
 
     if missing_fields:
         return Response({'Ошибка': f'Не хватает обязательных полей: {", ".join(missing_fields)}'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if Users.objects.filter(email=request.data['email']).exists() or Users.objects.filter(username=request.data['username']).exists():
+    if Users.objects.filter(Email=request.data['Email']).exists() or Users.objects.filter(Username=request.data['Username']).exists():
         return Response({'Ошибка': 'Пользователь с таким email или username уже существует'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Хэшируем пароль перед сохранением
-    request.data['password'] = make_password(request.data['password'])
+    password_hash = make_password(request.data["Password"])
 
-    serializer = UsersSerializer(data=request.data)
-    if serializer.is_valid():
-        serializer.save()
-        return Response({'status': 'Success'}, status=status.HTTP_201_CREATED)
-    else:
-        return Response({'status': 'Error', 'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    Users.objects.create(
+        Email=request.data['Email'],
+        Username=request.data['Username'],
+        Password=password_hash,
+        Role='User',
+    )
+    return Response({'Пользователь успешно зарегистрирован'},status=status.HTTP_201_CREATED)
 
-@swagger_auto_schema(method='post', request_body=UsersSerializer,
-                     operation_summary="User Login", responses={200: 'OK', 401: 'Unauthorized'})
+@swagger_auto_schema(
+    method='post',
+    request_body=openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=['Email', 'Password'],
+    properties={
+        'Email': openapi.Schema(type=openapi.TYPE_STRING),
+        'Password': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_PASSWORD),
+        },
+    ),
+    responses={
+        200: 'Успешная авторизация', 
+        400: 'Неверные параметры запроса или отсутствуют обязательные поля',
+        401: 'Неавторизованный доступ',
+    },
+    operation_summary='Метод для авторизации'
+)
 @api_view(['POST'])
-@authentication_classes([])
-@permission_classes([AllowAny])
-@csrf_exempt
-def login_view(request):
+def login(request, format=None):
+    existing_session = request.COOKIES.get('session_key')
+
+    if existing_session and get_value(existing_session):
+        return Response({'User_id': get_value(existing_session)})
+
+    email = request.data.get("Email")
+    password = request.data.get("Password")
+    
+    if not email or not password:
+        return Response({'error': 'Необходимы почта и пароль'}, status=status.HTTP_400_BAD_REQUEST)
+
     try:
-        email = request.data.get("email")
-        password = request.data.get("password")
-
-        user = Users.objects.get(email=email)
-        user = authenticate(request, username=email, password=password)
-
-        if user is not None and user.is_active:
-            # Генерация случайного токена
-            token = str(uuid.uuid4())
-
-            # Сохранение токена и идентификатора пользователя в Redis
-            session_storage.set(token, user.user_id)
-
-            # Установка куки с токеном в ответе
-            response = Response({'status': 'ok'})
-            response.set_cookie("session_token", token)
-            return response
-        else:
-            return Response({'status': 'error', 'error': 'Login failed'}, status=status.HTTP_401_UNAUTHORIZED)
-
+        user = Users.objects.get(Email=email)
     except Users.DoesNotExist:
-        logger.error(f'User with email {email} not found.')
-        return Response({'status': 'error', 'error': 'User not found'}, status=status.HTTP_401_UNAUTHORIZED)
-    except Exception as e:
-        logger.error(f'Error during authentication: {e}')
-        return Response({'status': 'error', 'error': 'Authentication failed'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response(status=status.HTTP_401_UNAUTHORIZED)
 
+    if check_password(password, user.Password):
+        random_part = secrets.token_hex(8)
+        session_hash = hashlib.sha256(f'{user.User_id}:{email}:{random_part}'.encode()).hexdigest()
+        set_key(session_hash, user.User_id)
 
-@swagger_auto_schema(method='post', request_body=UsersSerializer,
-                     operation_summary="User Logout", responses={200: 'OK'})
-@api_view(['POST'])
-def logout_view(request):
-    # Получение токена из куки
-    token = request.COOKIES.get('session_token')
+        serialize = UsersSerializer(user)
+        response = Response(serialize.data)
+        response.set_cookie('session_key', session_hash, max_age=86400)
+        return response
 
-    if token:
-        # Удаление токена из Redis
-        session_storage.delete(token)
+    return Response(status=status.HTTP_401_UNAUTHORIZED)
 
-    # Очистка куки с токеном
-    response = Response({'status': 'Success'})
-    response.delete_cookie('session_token')
-    return response
+@swagger_auto_schema(
+    method='get',
+    responses={
+        200: 'Успешный выход',
+        401: 'Неавторизованный доступ',
+    },
+    operation_summary='Метод для выхода пользователя из системы'
+)
+@api_view(['GET'])
+def logout(request):
+    session_key = request.COOKIES.get('session_key')
+
+    if session_key:
+        if not get_value(session_key):
+            return Response({'error': 'Вы не авторизованы'}, status=status.HTTP_401_UNAUTHORIZED)
+        delete_value(session_key)
+        response = Response({'message': 'Вы успешно вышли из системы'})
+        response.delete_cookie('session_key')
+        return response
+    else:
+        return Response({'error': 'Вы не авторизованы'}, status=status.HTTP_401_UNAUTHORIZED)
+
 """
 УСЛУГИ ###########################################################################################
 """
-@swagger_auto_schema(method='get', operation_summary="Get Events", responses={200: EventsSerializer(many=True)})
+@swagger_auto_schema(method='get', operation_summary="Возвращает список событий", responses={200: EventsSerializer(many=True)})
 @api_view(['GET'])
-@authentication_classes([])
-@permission_classes([AllowAny])
 def get_events(request, format=None):
     """
     Возвращает список событий
@@ -133,8 +167,6 @@ def get_events(request, format=None):
     
     search_query = request.GET.get('search', '')  # Получаем параметр "search" из запроса
     status = request.GET.get('status', '')  # Получаем параметр "status" из запроса
-
-    # Фильтруем события по полю "Status" и исключаем те, где Status = 'D'
     events = Events.objects.exclude(Status='D')
 
     if status:
@@ -157,15 +189,32 @@ def get_events(request, format=None):
 
     return Response(serialized_events)
 
-@swagger_auto_schema(method='post', operation_summary="Create Event", 
-                     request_body=EventsSerializer, responses={201: EventsSerializer()})
+@swagger_auto_schema(
+        method='post', 
+        operation_summary="Добавляет новое событие", 
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'Name': openapi.Schema(type=openapi.TYPE_STRING),
+                'Start_date': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+                'End_date': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+                'Image': openapi.Schema(type=openapi.TYPE_FILE),
+                'Status': openapi.Schema(type=openapi.TYPE_STRING),
+                'Info': openapi.Schema(type=openapi.TYPE_STRING),
+        },
+        required=['Name', 'Start_date', 'End_date', 'Status', 'Info', 'Image']
+    ),
+        responses={201: EventsSerializer()})
 @api_view(['POST'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAdmin])
 def post_event(request, format=None):
     """
     Добавляет новое событие
     """
+    # Проверяем авторизацию и роль "Admin"
+    user = check_authorize(request)
+    if not (user and user.Role == 'Admin'):
+        return Response({'error': 'необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
+    
     serializer = EventsSerializer(data=request.data)
 
     if serializer.is_valid():
@@ -208,10 +257,8 @@ def post_event(request, format=None):
         else:
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@swagger_auto_schema(method='get', operation_summary="Get Event Detail", responses={200: EventsSerializer()})
+@swagger_auto_schema(method='get', operation_summary="Возвращает информацию о событии", responses={200: EventsSerializer()})
 @api_view(['GET'])
-@authentication_classes([])
-@permission_classes([AllowAny])
 def get_event(request, pk, format=None):
     event = get_object_or_404(Events, pk=pk)
     
@@ -225,15 +272,29 @@ def get_event(request, pk, format=None):
         serializer_data['ImageURL'] = image_url
         return Response(serializer_data)
 
-@swagger_auto_schema(method='PUT', operation_summary="Update Event Information",
-                      request_body=EventsSerializer, responses={200: EventsSerializer(), 400: 'Bad Request'})
+@swagger_auto_schema(
+        method='PUT', 
+        operation_summary="Обновляет информацию о событии",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'Name': openapi.Schema(type=openapi.TYPE_STRING),
+                'Start_date': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+                'End_date': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+                'Image': openapi.Schema(type=openapi.TYPE_FILE),
+                'Status': openapi.Schema(type=openapi.TYPE_STRING),
+                'Info': openapi.Schema(type=openapi.TYPE_STRING),
+            },
+        ),
+        responses={200: EventsSerializer(), 400: 'Bad Request'})
 @api_view(['PUT'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAdmin])
 def put_event(request, pk, format=None):
     """
     Обновляет информацию о событии
     """
+    user = check_authorize(request)
+    if not (user and user.Role == 'Admin'):
+        return Response({'error': 'необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
     event = get_object_or_404(Events, pk=pk)
     serializer = EventsSerializer(event, data=request.data, partial=True)  # Use partial=True
 
@@ -273,14 +334,17 @@ def put_event(request, pk, format=None):
         else:
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@swagger_auto_schema(method='DELETE', operation_summary="Delete Event", responses={204: 'No Content'})
+
+@swagger_auto_schema(method='DELETE', operation_summary="Удаляет информацию о событии", responses={204: 'No Content'})
 @api_view(['DELETE'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAdmin])
 def delete_event(request, pk, format=None):
     """
     Логически удаляет информацию о событии, устанавливая поле 'Status' в 'D'.
     """
+    user = check_authorize(request)
+    if not (user and user.Role == 'Admin'):
+        return Response({'error': 'необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
+    
     event = get_object_or_404(Events, pk=pk)
     
     # Установите поле 'Status' в 'D' и сохраните объект
@@ -289,66 +353,45 @@ def delete_event(request, pk, format=None):
     
     return Response(status=status.HTTP_204_NO_CONTENT)
 
-# @api_view(['GET'])
-# def get_reservations_for_event(request, pk, format=None):
-#     """
-#     Находит все заявки, где есть событие
-#     """
-#     # Найти все заявки, связанные с указанным event_id
-#     event_reservations = Event_Reservation.objects.filter(Event_id=pk)
-
-#     # Получить ID заявок из Event_Reservation
-#     reservation_ids = event_reservations.values_list('Reserve_id', flat=True)
-
-#     # Получить данные по заявкам из Reservations
-#     reservations = Reservations.objects.filter(Reserve_id__in=reservation_ids)
-
-#     # Сериализовать данные
-#     reservation_serializer = ReservationsSerializer(reservations, many=True)
-#     event_reservation_serializer = EventReservationSerializer(event_reservations, many=True)
-
-#     # Вернуть данные в ответе
-#     response_data = {
-#         "reservations": reservation_serializer.data,
-#         "event_reservations": event_reservation_serializer.data
-#     }
-
-#     return Response(response_data)
-
-@swagger_auto_schema(method='POST', operation_summary="Add Event to Reservation", 
-                     request_body=EventReservationSerializer, responses={200: 'OK', 404: 'Event not found'})
+@swagger_auto_schema(
+        method='POST', 
+        operation_summary="Добавляет услугу в заявку", 
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'Group_info': openapi.Schema(type=openapi.TYPE_STRING),
+                'Group_size': openapi.Schema(type=openapi.TYPE_INTEGER),
+                'Date': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+            },
+        required=['Group_info', 'Group_size', 'Date']
+        ),
+        responses={200: 'OK', 404: 'Событие не найдено'})
 @api_view(['POST'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAuthenticated])
 def add_event_to_reservation(request, pk, format=None):
     """
     Создает заявку, если требуется, и добавляет услугу в заявку
     """
-    if not request.data:
-        return Response({'error': 'Пустой запрос'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Используйте request.user.id для получения id аутентифицированного пользователя
-    user_id = request.user.user_id
-    
+    user = check_authorize(request)
+    if not (user and user.Role == 'User'):
+        return Response({'error': 'необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
     # Проверка наличия активной заявки со статусом 'M' для конкретного пользователя
     try:
-        client = Users.objects.get(user_id=user_id)
-        reservation = Reservations.objects.get(Client_id=client, Status='M')
-    except Users.DoesNotExist:
-        return Response({'error': 'Пользователь не найден'}, status=status.HTTP_404_NOT_FOUND)
+        reservation = Reservations.objects.get(Client_id=user, Status='M')
     except Reservations.DoesNotExist:
         # Если активной заявки не существует, создаем новую заявку со статусом 'M'
-        reservation = Reservations.objects.create(Client_id=client, Creation_date=timezone.now(), Status='M')
+        reservation = Reservations.objects.create(Client_id=user, Creation_date=timezone.now(), Status='M')
         reservation.save()
 
-    # Остальной код метода остается без изменений
+    # Получаем экземпляр события по его идентификатору (pk)
     try:
         event = Events.objects.get(Event_id=pk)
     except Events.DoesNotExist:
+        # Обработка случая, если события с указанным ID не существует
         return Response({'error': 'Событие с указанным ID не существует'}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Добавление услуги в заявку
     event_reservation = Event_Reservation(
-        Event_id=event,
+        Event_id=event,  # Используем экземпляр события
         Reserve_id=reservation,
         Group_info=request.data.get('Group_info'),
         Group_size=request.data.get('Group_size'),
@@ -359,124 +402,136 @@ def add_event_to_reservation(request, pk, format=None):
     serializer = EventReservationSerializer(event_reservation)
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+
 """
 ЗАЯВКИ ###########################################################################################
 """
-@swagger_auto_schema(method='get', operation_summary="Get Reservations", 
+@swagger_auto_schema(method='get', operation_summary="Выводит все заявки", 
                      responses={200: ReservationsSerializer(many=True)})
 @api_view(['GET'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAuthenticated])
-@csrf_exempt
 def get_reservations(request, format=None):
     """
     Выводит все заявки с данными по событиям
     """
-    token = request.COOKIES.get("session_token")
+    user = check_authorize(request)
+    if not user:
+        return Response({'error': 'необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    if token:
-        user_id = session_storage.get(token)
+    # Получение параметров запроса
+    start_date = request.query_params.get('start_date')
+    end_date = request.query_params.get('end_date')
+    status = request.query_params.get('status')
 
-        if user_id is not None:
-            try:
-                user_id = int(user_id)
-            except ValueError:
-                return Response({'error': 'Неверный формат идентификатора пользователя'}, status=400)
+    # Проверка роли пользователя
+    if user.Role == 'Admin':
+        # Возвращаем все заявки, кроме заявок со статусом 'D'
+        reservations = Reservations.objects.exclude(Status='D')
+    elif user.Role == 'User':
+        # Возвращаем заявки только для текущего пользователя со статусом 'M'
+        reservations = Reservations.objects.filter(Client_id=user, Status='M')
 
-            try:
-                if request.user.role == 'Admin':
-                    # Если админ, получаем все заявки
-                    reservations = Reservations.objects.exclude(Status='D')
-                elif request.user.role == 'User' and request.user.user_id == user_id:
-                    # Если обычный пользователь и запрос от владельца сессии, получаем только свои заявки
-                    reservations = Reservations.objects.filter(Client_id=request.user.user_id, Status='M').exclude(Status='D')
-                else:
-                    # Если роль не Admin и не User, или запрос от чужой сессии, возвращаем ошибку
-                    return Response({'error': 'Доступ запрещен'}, status=403)
+    # Фильтрация по дате и статусу
+    if start_date:
+        start_date = parse_date(start_date)
+        reservations = reservations.filter(Formation_date__gte=start_date)
+    if end_date:
+        end_date = parse_date(end_date)
+        reservations = reservations.filter(Formation_date__lte=end_date)
+    if status:
+        reservations = reservations.filter(Status=status)
 
-                response_data = []
-                for reservation in reservations:
-                    # Получаем все связанные заявки на мероприятия для текущей заявки
-                    event_reservations = Event_Reservation.objects.filter(Reserve_id=reservation)
+    response_data = []
 
-                    # Инициализируем список данных о мероприятиях
-                    event_data = []
+    for reservation in reservations:
+        # Получаем все связанные заявки на мероприятия для текущей заявки
+        event_reservations = Event_Reservation.objects.filter(Reserve_id=reservation)
 
-                    for event_reservation in event_reservations:
-                        # Получаем связанные с мероприятием данные
-                        event = event_reservation.Event_id
-                        event_data.append({
-                            "event_reservation": EventReservationSerializer(event_reservation).data,
-                            "event": EventsSerializer(event).data
-                        })
+        # Инициализируем список данных о мероприятиях
+        event_data = []
 
-                    reservation_data = ReservationsSerializer(reservation).data
-                    response_data.append({
-                        "reservation": reservation_data,
-                        "reservation_data": event_data
-                    })
+        for event_reservation in event_reservations:
+            # Получаем связанные с мероприятием данные
+            event = event_reservation.Event_id
+            event_data.append({
+                "event_reservation": EventReservationSerializer(event_reservation).data,
+                "event": EventsSerializer(event).data
+            })
 
-                return Response(response_data)
-            except ObjectDoesNotExist:
-                return Response({'error': 'Объект не найден'}, status=404)
-        else:
-            # Пользователь не имеет доступа, возвращаем соответствующий ответ
-            return Response({'error': 'Доступ запрещен'}, status=403)
-    else:
-        # Если токен отсутствует, возвращаем ошибку
-        return Response({'error': 'Отсутствует токен сессии'}, status=401)
+        reservation_data = ReservationsSerializer(reservation).data
+        response_data.append({
+            "reservation": reservation_data,
+            "reservation_data": event_data
+        })
+
+    return Response(response_data)
 
 
-
-@swagger_auto_schema(method='GET', operation_summary="Get Reservation Detail", 
+@swagger_auto_schema(method='GET', operation_summary="Выводит все данные по 1ой заявке", 
                      responses={200: ReservationsSerializer()})
 @api_view(['GET'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAuthenticated])
 def get_reservation(request, pk, format=None):
     """
     Выводит все данные по 1ой заявке
     """
-    # Получаем объект заявки или возвращаем 404, если не существует
-    reservation = get_object_or_404(Reservations, pk=pk)
+    user = check_authorize(request)
+    if not user:
+        return Response({'error': 'необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    # Проверяем, является ли пользователь владельцем заявки
-    if reservation.Client_id.user_id != request.user.user_id:
-        return Response({"detail": "You do not have permission to perform this action."}, status=status.HTTP_403_FORBIDDEN)
+    # Получаем заявку по указанному идентификатору (pk)
+    try:
+        reservation = Reservations.objects.get(Reserve_id=pk)
+    except Reservations.DoesNotExist:
+        return Response({'error': 'Заявка с указанным ID не существует'}, status=status.HTTP_404_NOT_FOUND)
 
-    # Получаем все связанные заявки на мероприятия для текущей заявки
-    event_reservations = Event_Reservation.objects.filter(Reserve_id=reservation)
+    # Проверка роли пользователя
+    if user.Role == 'Admin' or user == reservation.Client_id:
+        # Возвращаем данные только для Admin или для пользователя, чья это заявка
+        event_reservations = Event_Reservation.objects.filter(Reserve_id=reservation)
 
-    # Инициализируем список данных о мероприятиях
-    event_data = []
-    for event_reservation in event_reservations:
-        # Получаем связанные с мероприятием данные
-        event = event_reservation.Event_id
-        event_data.append({
-            "event_reservation": EventReservationSerializer(event_reservation).data,
-            "event": EventsSerializer(event).data
-        })
+        # Инициализируем список данных о мероприятиях
+        event_data = []
+        for event_reservation in event_reservations:
+            # Получаем связанные с мероприятием данные
+            event = event_reservation.Event_id
+            event_data.append({
+                "event_reservation": EventReservationSerializer(event_reservation).data,
+                "event": EventsSerializer(event).data
+            })
 
-    # Получаем данные о текущей заявке
-    reservation_data = ReservationsSerializer(reservation).data
+        # Получаем данные о текущей заявке
+        reservation_data = ReservationsSerializer(reservation).data
 
-    # Собираем итоговый ответ
-    response_data = {
-        "reservation": reservation_data,
-        "reservation_data": event_data 
-    }
+        # Собираем итоговый ответ
+        response_data = {
+            "reservation": reservation_data,
+            "reservation_data": event_data 
+        }
 
-    return Response(response_data)
+        return Response(response_data)
+    else:
+        return Response({'error': 'Доступ запрещен'}, status=status.HTTP_403_FORBIDDEN)
 
-@swagger_auto_schema(method='PUT', operation_summary="Update Reservation Info", 
-                     request_body=ReservationsSerializer,responses={200: 'OK', 201: 'Created'})    
+@swagger_auto_schema(
+        method='PUT', 
+        operation_summary="Обновляет информацию о заявке", 
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'Moderator_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                'Creation_date': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME),
+                'Formation_date': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME),
+                'Completion_date': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME),
+            },
+        ),
+        responses={200: 'OK', 201: 'Обновлено'})    
 @api_view(['PUT'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAdmin])
 def put_reservation(request, pk, format=None):
     """
     Обновляет информацию о заявке
     """
+    user = check_authorize(request)
+    if not (user and user.Role == 'Admin'):
+        return Response({'error': 'необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
     reservation = get_object_or_404(Reservations, pk=pk)
 
     if 'Status' in request.data:
@@ -491,23 +546,30 @@ def put_reservation(request, pk, format=None):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)    
 
 
-@swagger_auto_schema(method='PUT', operation_summary="Change Status (User)", request_body=ReservationsSerializer,
-                     responses={200: 'OK', 403: 'Forbidden', 400: 'Bad Request'})
+@swagger_auto_schema(
+        method='PUT', 
+        operation_summary="Обновляет статус заявки (для пользователя)", 
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'Status': openapi.Schema(type=openapi.TYPE_STRING),
+            },
+        required=['Status']
+        ),
+        responses={200: 'OK', 403: 'Forbidden', 400: 'Bad Request'})
 @api_view(['PUT'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAuthenticated])
 def put_reservation_user(request, pk, format=None):
     """
     Обновляет статус заявки (для пользователя)
     """
+    user = check_authorize(request)
+    if not (user and user.Role == 'User'):
+        return Response({'error': 'необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
     reservation = get_object_or_404(Reservations, pk=pk)
-
-    # Проверяем, является ли пользователь владельцем заявки
-    if reservation.Client_id.user_id != request.user.user_id:
-        return Response({"detail": "You do not have permission to perform this action."}, status=status.HTTP_403_FORBIDDEN)
-
+    if reservation.Client_id != user:
+        return Response({'error': 'Доступ запрещен'}, status=status.HTTP_403_FORBIDDEN)
     if reservation.Status != 'M':
-        return Response({"detail": "Invalid initial status. Must be 'M'."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Заявка не является черновиком"}, status=status.HTTP_400_BAD_REQUEST)
 
     new_status = request.data.get("Status")
     if new_status == 'iP':
@@ -517,48 +579,62 @@ def put_reservation_user(request, pk, format=None):
         serializer = ReservationsSerializer(reservation)
         return Response(serializer.data)
     else:
-        return Response({"detail": "Invalid status. Use 'iP'"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Новый статус должен быть 'iP'"}, status=status.HTTP_400_BAD_REQUEST)
 
-@swagger_auto_schema(method='PUT', operation_summary="Change Status (Admin)", request_body=ReservationsSerializer,
-                     responses={200: 'OK', 403: 'Forbidden', 400: 'Bad Request'})
+@swagger_auto_schema(
+        method='PUT', 
+        operation_summary="Обновляет статус заявки (для админа)", 
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'Status': openapi.Schema(type=openapi.TYPE_STRING),
+            },
+        required=['Status']
+        ),
+        responses={200: 'OK', 403: 'Forbidden', 400: 'Bad Request'})
 @api_view(['PUT'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAdmin])
 def put_reservation_admin(request, pk, format=None):
     """
     Обновляет статус заявки (для админа)
     """
+    user = check_authorize(request)
+    if not (user and user.Role == 'Admin'):
+        return Response({'error': 'Необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
     reservation = get_object_or_404(Reservations, pk=pk)
     if reservation.Status != 'iP':
-        return Response({"detail": "Invalid initial status. Must be 'iP'."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Заявка не в работе"}, status=status.HTTP_400_BAD_REQUEST)
 
     new_status = request.data.get("Status")
     if new_status in ['C','Ca']:
         reservation.Status = new_status
-        reservation.Moderator_id.user_id  = request.user.user_id 
         reservation.Completion_date=timezone.now()
         reservation.save()
         serializer = ReservationsSerializer(reservation)
         return Response(serializer.data)
     else:
-        return Response({"detail": "Invalid status. Use 'C' or 'Ca' "}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Новый статус должен быть 'C' или 'Ca' "}, status=status.HTTP_400_BAD_REQUEST)
     
-@swagger_auto_schema(method='DELETE', operation_summary="Delete Reservation", 
+@swagger_auto_schema(method='DELETE', operation_summary="удаляет информацию о заявке", 
                      responses={204: 'No Content'})
 @api_view(['DELETE'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAuthenticated])
 def delete_reservation(request, pk, format=None):
     """
     Логически удаляет информацию о заявке, устанавливая поле 'Status' в 'D'.
     """
-    reservation = get_object_or_404(Reservations, pk=pk)
-    if reservation.Client_id.user_id != request.user.user_id:
-        return Response({"detail": "You do not have permission to perform this action."}, status=status.HTTP_403_FORBIDDEN)
+    user = check_authorize(request)
+    if not (user and user.Role == 'User'):
+        return Response({'error': 'Необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    # Установите поле 'Status' в 'D' и сохраните объект
+    # Получаем объект Reservations или возвращаем 404, если объект не найден
+    reservation = get_object_or_404(Reservations, pk=pk)
+
+    # Проверяем, что заявка принадлежит текущему пользователю
+    if reservation.Client_id != user:
+        return Response({'error': 'Доступ запрещен'}, status=status.HTTP_403_FORBIDDEN)
+
+    # Установите поле 'Status' в 'D' и установите Completion_date
     reservation.Status = 'D'
-    reservation.Completion_date=timezone.now()
+    reservation.Completion_date = timezone.now()
     reservation.save()
     
     return Response(status=status.HTTP_204_NO_CONTENT)
@@ -567,26 +643,26 @@ def delete_reservation(request, pk, format=None):
 М-М ###########################################################################################
 """
 
-@swagger_auto_schema(method='DELETE', operation_summary="Delete Event from Reservation", 
+@swagger_auto_schema(method='DELETE', operation_summary="Удаляет событие из заявки (в М-М)", 
                      responses={200: EventReservationSerializer()})
 @api_view(['DELETE'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAuthenticated])
 def delete_event_from_reserve(request, pk, fk, format=None):
     """
     Удаляет событие из заявки (в М-М)
     """
-    event_reservations = Event_Reservation.objects.filter(Reserve_id=fk)
-    if not event_reservations:
-        return Response({'error': 'Нет заявок с таким id'}, status=status.HTTP_404_NOT_FOUND)
+    user = check_authorize(request)
+    if not (user and user.Role == 'User'):
+        return Response({'error': 'Необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
     
-    if reservation.Client_id.user_id != request.user.user_id:
-        return Response({"detail": "You do not have permission to perform this action."}, status=status.HTTP_403_FORBIDDEN)
+    # Получаем заявку по идентификатору
+    reservation = get_object_or_404(Reservations, Reserve_id=fk)
 
-    try:
-        event_reservation = Event_Reservation.objects.get(Event_id=pk, Reserve_id=fk)
-    except Event_Reservation.DoesNotExist:
-        return Response({'error': 'Событие не найдено в заявке'}, status=status.HTTP_404_NOT_FOUND)
+    # Проверяем, что заявка принадлежит текущему пользователю
+    if reservation.Client_id != user:
+        return Response({'error': 'Доступ запрещен'}, status=status.HTTP_403_FORBIDDEN)
+
+    # Пытаемся получить связь события и заявки
+    event_reservation = get_object_or_404(Event_Reservation, Event_id=pk, Reserve_id=fk)
 
     # Удаляем связь
     event_reservation.delete()
@@ -594,35 +670,48 @@ def delete_event_from_reserve(request, pk, fk, format=None):
     # Проверяем, остались ли другие связи для этой заявки
     remaining_event_reservations = Event_Reservation.objects.filter(Reserve_id=fk)
     if not remaining_event_reservations:
-        reservation = Reservations.objects.get(Reserve_id=fk)
         reservation.Status = 'D'
         reservation.save()
         return Response({'message': 'Заявка удалена'})
+    
+    return Response({'message': 'Событие успешно удалено из заявки'})
 
-    return Response(status=status.HTTP_204_NO_CONTENT)
-
-@swagger_auto_schema(method='PUT', operation_summary="Update Reservation Details", request_body=EventReservationSerializer,
-                     responses={200: EventReservationSerializer(), 400: 'Bad Request'})
+@swagger_auto_schema(
+        method='PUT', 
+        operation_summary="Обновляет информацию о данных заявки", 
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'Group_info': openapi.Schema(type=openapi.TYPE_STRING),
+                'Group_size': openapi.Schema(type=openapi.TYPE_INTEGER),
+                'Date': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+            },
+        ),
+        responses={200: EventReservationSerializer(), 400: 'Bad Request'})
 @api_view(['PUT'])
-@authentication_classes([SessionAuthentication, BasicAuthentication])
-@permission_classes([IsAuthenticated])
 def put_event_reservation(request, pk, fk, format=None):
     """
     Обновляет информацию о данных заявки
     """
+    user = check_authorize(request)
+    if not (user and user.Role == 'User'):
+        return Response({'error': 'Необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
     
-    event_reservation = Event_Reservation.objects.get(Event_id = pk, Reserve_id = fk)
-    if event_reservation.Reserve_id.Client_id.user_id != request.user.user_id:
-        return Response({"detail": "You do not have permission to perform this action."}, status=status.HTTP_403_FORBIDDEN)
+    # Получаем объект Event_Reservation или возвращаем 404, если объект не найден
+    event_reservation = get_object_or_404(Event_Reservation, Event_id=pk, Reserve_id=fk)
 
+    # Проверяем, что заявка принадлежит текущему пользователю
+    if event_reservation.Reserve_id.Client_id != user:
+        return Response({'error': 'Доступ запрещен'}, status=status.HTTP_403_FORBIDDEN)
+
+    # Обновляем информацию о данных заявки
     serializer = EventReservationSerializer(event_reservation, data=request.data, partial=True) 
 
     if serializer.is_valid():
         serializer.save()
         return Response(serializer.data)
     else:
-        return Response(status=status.HTTP_400_BAD_REQUEST)    
-
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 

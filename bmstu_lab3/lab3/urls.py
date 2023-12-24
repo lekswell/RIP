@@ -30,9 +30,7 @@ urlpatterns = [
     path('events/<int:pk>/', views.get_event, name='events-detail'),
     path('events/<int:pk>/edit/', views.put_event, name='events-edit'),
     path('events/<int:pk>/delete/', views.delete_event, name='events-delete'),
-   #path('events/<int:pk>/reserves/', views.get_reservations_for_event, name='events-reservations'),
     path('events/<int:pk>/add/', views.add_event_to_reservation, name='events-add-to-reservation'),
-
 
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
 
@@ -43,16 +41,14 @@ urlpatterns = [
     path('reserves/<int:pk>/edit_status_admin/', views.put_reservation_admin, name='reservations-edit-admin'),
     path('reserves/<int:pk>/delete/', views.delete_reservation, name='reservations-delete'),
 
-    path('reserves/<int:pk>/<int:fk>/delete/', views.delete_event_from_reserve, name='event-delete-from-reservation'),
-    path('reserves/<int:pk>/<int:fk>/edit/', views.put_event_reservation, name='data-event-reservation-edit'),
+    path('reserve/<int:pk>/<int:fk>/delete/', views.delete_event_from_reserve, name='event-delete-from-reservation'),
+    path('reserve/<int:pk>/<int:fk>/edit/', views.put_event_reservation, name='data-event-reservation-edit'),
 
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('admin/', admin.site.urls),
 
-    path('auth/register',  views.registration, name='register'),
-    path('auth/login',  views.login_view, name='login'),
-    path('auth/logout', views.logout_view, name='logout'),
-   #  path('users/registration/', views.registration, name='registration'),
-   #  path('users/login/', views.login_view, name='login'),
-   #  path('users/logout/', views.logout_view, name='logout'),
+    path('auth/register',  views.register, name='register'),
+    path('auth/login',  views.login, name='login'),
+    path('auth/logout', views.logout, name='logout'),
+
 ]

@@ -17,6 +17,7 @@ from minio import Minio
 from pathlib import Path
 import hashlib
 import secrets
+import requests
 
 from stocks.serializers import UsersSerializer, ReservationsSerializer, EventsSerializer, EventReservationSerializer
 from stocks.models import Users, Reservations, Events, Event_Reservation
@@ -638,6 +639,52 @@ def delete_reservation(request, pk, format=None):
     reservation.save()
     
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+@swagger_auto_schema(method='POST', operation_summary="отправляет id заявки на асинхронный сервер")
+@api_view(['POST'])
+def send_reserve_id(request, pk):
+    key = "P-j8TR9-vxbePac3Du1y"
+
+    data = {
+        'pk': pk,
+        'key': key
+    }
+
+    try:
+        response = requests.post('http://localhost:8080/Async/', json=data)
+
+        if response.status_code == 204:
+            return Response({'message': 'Запрос успешно отправлен'}, status=204)
+        else:
+            return Response({'error': 'Не удалось отправить запрос. Статус ответа: {}'.format(response.status_code)}, status=500)
+    except Exception as e:
+        print("Exception:", str(e))  # Вывести исключение для отладки
+        return Response({'error': 'Error: {}'.format(str(e))}, status=500)
+
+
+
+@api_view(['PUT'])
+def put_reservation_available_field(request, format=None):
+    """
+    Обновляет информацию о заявке
+    """ 
+    try:
+        result = request.data['result']
+        pk = request.data['pk']
+    except KeyError:
+        return Response({'error': 'Missing "result" field in the request data.'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        # Update the reservation based on the data received asynchronously
+        reservation = get_object_or_404(Reservations, pk=pk)
+        reservation.Available = result
+        reservation.save()
+
+        # Serialize and return the updated reservation data
+        serializer = ReservationsSerializer(reservation)
+        return Response(serializer.data)
+    except Exception as e:
+        return Response({'error': 'Не удалось обновить заявку. {}'.format(str(e))}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 """
 М-М ###########################################################################################

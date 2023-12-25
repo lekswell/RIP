@@ -41,6 +41,9 @@ urlpatterns = [
     path('reserves/<int:pk>/edit_status_admin/', views.put_reservation_admin, name='reservations-edit-admin'),
     path('reserves/<int:pk>/delete/', views.delete_reservation, name='reservations-delete'),
 
+    path('reserves/send_id/<int:pk>/', views.send_reserve_id, name='send_reserve_id'),
+    path('reserves/update_available/', views.put_reservation_available_field, name='put_reservation_available_field'),
+
     path('reserve/<int:pk>/<int:fk>/delete/', views.delete_event_from_reserve, name='event-delete-from-reservation'),
     path('reserve/<int:pk>/<int:fk>/edit/', views.put_event_reservation, name='data-event-reservation-edit'),
 

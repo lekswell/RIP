@@ -26,6 +26,7 @@ class Reservations(models.Model):
     Formation_date = models.DateTimeField(null=True)
     Completion_date = models.DateTimeField(null=True)
     Status = models.CharField(max_length=20, choices=STATUS_CHOICE)
+    Available = models.BooleanField(default=True)
     class Meta:
         managed = True
         db_table = 'bmstu_reservations'

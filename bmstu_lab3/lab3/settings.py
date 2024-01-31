@@ -69,10 +69,11 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:8080",  # Замените на адрес вашего Go-сервера
+    "http://localhost:3000",
 ]
+
+CORS_ALLOW_CREDENTIALS = True
 
 ROOT_URLCONF = 'lab3.urls'
 
@@ -104,7 +105,7 @@ DATABASES = {
         'NAME': 'rip',
         'USER': 'student',
         'PASSWORD': 'root',
-        'HOST': '192.168.1.105',
+        'HOST': '192.168.1.102',
         'PORT': 5432, # Стандартный порт PostgreSQL
         'TEST_CHARSET': 'utf8',
     }

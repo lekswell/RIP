@@ -1,6 +1,7 @@
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 from rest_framework import status
+from rest_framework.request import Request as DRFRequest
 
 from s3.minio import get_minio_presigned_url, upload_image_to_minio
 
@@ -164,31 +165,35 @@ def get_events(request, format=None):
     """
     Возвращает список событий
     """
-    print('get')
-    
-    search_query = request.GET.get('search', '')  # Получаем параметр "search" из запроса
-    status = request.GET.get('status', '')  # Получаем параметр "status" из запроса
+    search_query = request.GET.get('search', '')
+    status = request.GET.get('status', '')
     events = Events.objects.exclude(Status='D')
 
     if status:
-        # Если параметр "status" передан, выполним фильтрацию по полю "Status" на основе значения status
         events = events.filter(Status=status)
 
     if search_query:
-        # Если параметр "search" передан, выполним фильтрацию по полю "Name" на основе значения search_query
         events = events.filter(Name__icontains=search_query)
 
-    serialized_events = []
+    response_data = {"events": []}
+    user = check_authorize(request)
+    if user and user.Role == 'User':
+        # Если пользователь авторизован и его роль - User, добавьте его заявку со статусом 'M' в список
+        user_reservation = Reservations.objects.filter(Client_id=user, Status='M').first()
+        if user_reservation:
+            # Если у пользователя есть активная заявка, добавьте ее данные перед списком событий
+            serialized_reservation = ReservationsSerializer(user_reservation).data
+            response_data["hasDraft"] = 'True'
+            response_data["Draft"] = serialized_reservation
+
+    # Добавьте список событий после заявки пользователя
     for event in events:
-        # Generate a presigned URL for the event image
         image_url = get_minio_presigned_url(event.Image)
-        
-        # Добавьте поле "ImageURL" в объект события, указывающее на изображение в MinIO
         serialized_event = EventsSerializer(event).data
         serialized_event['ImageURL'] = image_url
-        serialized_events.append(serialized_event)
+        response_data["events"].append(serialized_event)
 
-    return Response(serialized_events)
+    return Response(response_data)
 
 @swagger_auto_schema(
         method='post', 
@@ -421,15 +426,14 @@ def get_reservations(request, format=None):
     # Получение параметров запроса
     start_date = request.query_params.get('start_date')
     end_date = request.query_params.get('end_date')
-    status = request.query_params.get('status')
+    Status = request.query_params.get('status')
 
-    # Проверка роли пользователя
     if user.Role == 'Admin':
-        # Возвращаем все заявки, кроме заявок со статусом 'D'
-        reservations = Reservations.objects.exclude(Status='D')
+        # Возвращаем все заявки, кроме заявок со статусом 'D' и 'M'
+        reservations = Reservations.objects.exclude(Status__in=['D', 'M'])
     elif user.Role == 'User':
         # Возвращаем заявки только для текущего пользователя со статусом 'M'
-        reservations = Reservations.objects.filter(Client_id=user, Status='M')
+        reservations = Reservations.objects.exclude(Status='D').filter(Client_id=user)
 
     # Фильтрация по дате и статусу
     if start_date:
@@ -438,8 +442,8 @@ def get_reservations(request, format=None):
     if end_date:
         end_date = parse_date(end_date)
         reservations = reservations.filter(Formation_date__lte=end_date)
-    if status:
-        reservations = reservations.filter(Status=status)
+    if Status:
+        reservations = reservations.filter(Status=Status)
 
     response_data = []
 
@@ -548,16 +552,17 @@ def put_reservation(request, pk, format=None):
 
 
 @swagger_auto_schema(
-        method='PUT', 
-        operation_summary="Обновляет статус заявки (для пользователя)", 
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            properties={
-                'Status': openapi.Schema(type=openapi.TYPE_STRING),
-            },
+    method='PUT', 
+    operation_summary="Обновляет статус заявки (для пользователя)", 
+    request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={
+            'Status': openapi.Schema(type=openapi.TYPE_STRING),
+        },
         required=['Status']
-        ),
-        responses={200: 'OK', 403: 'Forbidden', 400: 'Bad Request'})
+    ),
+    responses={200: 'OK', 403: 'Forbidden', 400: 'Bad Request'}
+)
 @api_view(['PUT'])
 def put_reservation_user(request, pk, format=None):
     """
@@ -574,6 +579,7 @@ def put_reservation_user(request, pk, format=None):
 
     new_status = request.data.get("Status")
     if new_status == 'iP':
+        send_to_async(pk)
         reservation.Status = new_status
         reservation.Formation_date = timezone.now()
         reservation.save()
@@ -581,6 +587,8 @@ def put_reservation_user(request, pk, format=None):
         return Response(serializer.data)
     else:
         return Response({"detail": "Новый статус должен быть 'iP'"}, status=status.HTTP_400_BAD_REQUEST)
+
+
 
 @swagger_auto_schema(
         method='PUT', 
@@ -600,7 +608,7 @@ def put_reservation_admin(request, pk, format=None):
     """
     user = check_authorize(request)
     if not (user and user.Role == 'Admin'):
-        return Response({'error': 'Необходима авторизация'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'error': 'Необходима авторизация Администратора'}, status=status.HTTP_401_UNAUTHORIZED)
     reservation = get_object_or_404(Reservations, pk=pk)
     if reservation.Status != 'iP':
         return Response({"detail": "Заявка не в работе"}, status=status.HTTP_400_BAD_REQUEST)
@@ -640,39 +648,40 @@ def delete_reservation(request, pk, format=None):
     
     return Response(status=status.HTTP_204_NO_CONTENT)
 
-@swagger_auto_schema(method='POST', operation_summary="отправляет id заявки на асинхронный сервер")
-@api_view(['POST'])
-def send_reserve_id(request, pk):
-    key = "P-j8TR9-vxbePac3Du1y"
-
+# @swagger_auto_schema(method='POST', operation_summary="отправляет id заявки на асинхронный сервер")
+# @api_view(['POST'])
+def send_to_async(pk):
     data = {
         'pk': pk,
-        'key': key
     }
+    requests.post('http://192.168.1.102:8080/Async/', json=data, timeout = 1)
 
-    try:
-        response = requests.post('http://localhost:8080/Async/', json=data)
+    # try:
+    #     response = requests.post('http://192.168.1.102:8080/Async/', json=data)
 
-        if response.status_code == 204:
-            return Response({'message': 'Запрос успешно отправлен'}, status=204)
-        else:
-            return Response({'error': 'Не удалось отправить запрос. Статус ответа: {}'.format(response.status_code)}, status=500)
-    except Exception as e:
-        print("Exception:", str(e))  # Вывести исключение для отладки
-        return Response({'error': 'Error: {}'.format(str(e))}, status=500)
-
+    #     if response.status_code == 204:
+    #         return Response({'message': 'Запрос успешно отправлен'}, status=200)
+    #     else:
+    #         return Response({'error': 'Не удалось отправить запрос. Статус ответа: {}'.format(response.status_code)}, status=500)
+    # except Exception as e:
+    #     print("Exception:", str(e))  # Вывести исключение для отладки
+    #     return Response({'error': 'Error: {}'.format(str(e))}, status=500)
 
 
 @api_view(['PUT'])
-def put_reservation_available_field(request, format=None):
+def put_reservation_available(request, pk, format=None):
     """
     Обновляет информацию о заявке
     """ 
     try:
-        result = request.data['result']
-        pk = request.data['pk']
+        key = request.data.get('key')
+        result = request.data.get('result')
     except KeyError:
         return Response({'error': 'Missing "result" field in the request data.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Добавляем проверку ключа
+    if key != "P-j8TR9-vxbePac3Du1y":
+        return Response({'error': 'Invalid key.'}, status=status.HTTP_403_FORBIDDEN)
     
     try:
         # Update the reservation based on the data received asynchronously

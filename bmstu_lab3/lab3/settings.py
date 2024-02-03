@@ -105,7 +105,7 @@ DATABASES = {
         'NAME': 'rip',
         'USER': 'student',
         'PASSWORD': 'root',
-        'HOST': '192.168.1.102',
+        'HOST': '192.168.1.105',
         'PORT': 5432, # Стандартный порт PostgreSQL
         'TEST_CHARSET': 'utf8',
     }

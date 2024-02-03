@@ -427,13 +427,18 @@ def get_reservations(request, format=None):
     start_date = request.query_params.get('start_date')
     end_date = request.query_params.get('end_date')
     Status = request.query_params.get('status')
+    clientId = request.query_params.get('clientId')  # Добавлен новый параметр
 
     if user.Role == 'Admin':
         # Возвращаем все заявки, кроме заявок со статусом 'D' и 'M'
         reservations = Reservations.objects.exclude(Status__in=['D', 'M'])
     elif user.Role == 'User':
         # Возвращаем заявки только для текущего пользователя со статусом 'M'
-        reservations = Reservations.objects.exclude(Status='D').filter(Client_id=user)
+        reservations = Reservations.objects.exclude(Status__in=['D', 'M']).filter(Client_id=user)
+
+    # Добавление фильтрации по clientId
+    if clientId:
+        reservations = reservations.filter(Client_id=clientId)
 
     # Фильтрация по дате и статусу
     if start_date:
@@ -654,7 +659,7 @@ def send_to_async(pk):
     data = {
         'pk': pk,
     }
-    requests.post('http://192.168.1.102:8080/Async/', json=data, timeout = 1)
+    requests.post('http://192.168.1.105:8080/Async/', json=data, timeout = 1)
 
     # try:
     #     response = requests.post('http://192.168.1.102:8080/Async/', json=data)
